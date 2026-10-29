@@ -80,11 +80,18 @@ fn mk_or(parts: Vec<String>) -> String {
     }
 }
 
-fn num_digits(n: i64) -> usize {
-    n.abs().to_string().len()
+fn num_digits(n: i128) -> usize {
+    n.unsigned_abs().to_string().len()
 }
 
-pub fn rx_int_range(left: Option<i64>, right: Option<i64>) -> Result<String> {
+fn neg(n: i128) -> Result<i128> {
+    n.checked_neg()
+        .ok_or_else(|| anyhow!("Integer bound {n} is out of range"))
+}
+
+// i128 holds every integer bound that comes from an f64 up to 2^127, which
+// covers the full int64 and uint64 ranges
+pub fn rx_int_range(left: Option<i128>, right: Option<i128>) -> Result<String> {
     match (left, right) {
         (None, None) => Ok("-?(0|[1-9][0-9]*)".to_string()),
         (Some(left), None) => {
@@ -96,7 +103,7 @@ pub fn rx_int_range(left: Option<i64>, right: Option<i64>) -> Result<String> {
             } else {
                 let max_value = "9"
                     .repeat(num_digits(left))
-                    .parse::<i64>()
+                    .parse::<i128>()
                     .map_err(|e| anyhow!("Failed to parse max value for left {}: {}", left, e))?;
                 Ok(mk_or(vec![
                     rx_int_range(Some(left), Some(max_value))?,
@@ -111,7 +118,7 @@ pub fn rx_int_range(left: Option<i64>, right: Option<i64>) -> Result<String> {
                     rx_int_range(None, Some(-1))?,
                 ]))
             } else {
-                Ok(format!("-{}", rx_int_range(Some(-right), None)?))
+                Ok(format!("-{}", rx_int_range(Some(neg(right)?), None)?))
             }
         }
         (Some(left), Some(right)) => {
@@ -124,11 +131,14 @@ pub fn rx_int_range(left: Option<i64>, right: Option<i64>) -> Result<String> {
             }
             if left < 0 {
                 if right < 0 {
-                    Ok(format!("(-{})", rx_int_range(Some(-right), Some(-left))?))
+                    Ok(format!(
+                        "(-{})",
+                        rx_int_range(Some(neg(right)?), Some(neg(left)?))?
+                    ))
                 } else {
                     Ok(format!(
                         "(-{}|{})",
-                        rx_int_range(Some(0), Some(-left))?,
+                        rx_int_range(Some(0), Some(neg(left)?))?,
                         rx_int_range(Some(0), Some(right))?
                     ))
                 }
@@ -148,8 +158,8 @@ pub fn rx_int_range(left: Option<i64>, right: Option<i64>) -> Result<String> {
                     return Ok(format!("({lpref}[{lx}-{rx}])"));
                 }
 
-                let mut left_rec = lpref.parse::<i64>().unwrap_or(0);
-                let mut right_rec = rpref.parse::<i64>().unwrap_or(0);
+                let mut left_rec = lpref.parse::<i128>().unwrap_or(0);
+                let mut right_rec = rpref.parse::<i128>().unwrap_or(0);
                 if left_rec >= right_rec {
                     return Err(anyhow!(
                         "Invalid recursive range: left_rec ({}) must be less than right_rec ({})",
@@ -177,7 +187,7 @@ pub fn rx_int_range(left: Option<i64>, right: Option<i64>) -> Result<String> {
 
                 Ok(mk_or(parts))
             } else {
-                let break_point = 10_i64
+                let break_point = 10_i128
                     .checked_pow(num_digits(left) as u32)
                     .ok_or_else(|| anyhow!("Overflow when calculating break point"))?
                     - 1;
@@ -378,7 +388,7 @@ pub fn rx_float_range(
                     rx_float_range(Some(0.0), None, true, false)?,
                 ]))
             } else {
-                let left_int_part = left as i64;
+                let left_int_part = left as i128;
                 Ok(mk_or(vec![
                     rx_float_range(
                         Some(left),
@@ -456,13 +466,13 @@ pub fn rx_float_range(
                     return Err(anyhow!("Infinite numbers not supported"));
                 }
 
-                let mut left_rec: i64 = l
+                let mut left_rec: i128 = l
                     .split('.')
                     .next()
                     .ok_or_else(|| anyhow!("Failed to split left integer part"))?
                     .parse()
                     .map_err(|e| anyhow!("Failed to parse left integer part: {}", e))?;
-                let right_rec: i64 = r
+                let right_rec: i128 = r
                     .split('.')
                     .next()
                     .ok_or_else(|| anyhow!("Failed to split right integer part"))?
@@ -527,31 +537,23 @@ pub fn rx_float_range(
     }
 }
 
-pub(super) fn normalize_integer_bounds(num: &NumberSchema) -> (Option<i64>, Option<i64>) {
+pub(super) fn normalize_integer_bounds(num: &NumberSchema) -> (Option<i128>, Option<i128>) {
+    // step past an exclusive bound after the cast, adding 1.0 in f64 does
+    // nothing above 2^53
     let minimum = match num.get_minimum() {
-        (Some(min_val), true) => {
-            if min_val.fract() != 0.0 {
-                Some(min_val.ceil())
-            } else {
-                Some(min_val + 1.0)
-            }
+        (Some(min_val), true) if min_val.fract() == 0.0 => {
+            Some((min_val as i128).saturating_add(1))
         }
-        (Some(min_val), false) => Some(min_val.ceil()),
+        (Some(min_val), _) => Some(min_val.ceil() as i128),
         _ => None,
-    }
-    .map(|val| val as i64);
+    };
     let maximum = match num.get_maximum() {
-        (Some(max_val), true) => {
-            if max_val.fract() != 0.0 {
-                Some(max_val.floor())
-            } else {
-                Some(max_val - 1.0)
-            }
+        (Some(max_val), true) if max_val.fract() == 0.0 => {
+            Some((max_val as i128).saturating_sub(1))
         }
-        (Some(max_val), false) => Some(max_val.floor()),
+        (Some(max_val), _) => Some(max_val.floor() as i128),
         _ => None,
-    }
-    .map(|val| val as i64);
+    };
     (minimum, maximum)
 }
 
@@ -661,7 +663,7 @@ mod test_ranges {
     use super::{rx_float_range, rx_int_range};
     use regex::Regex;
 
-    fn do_test_int_range(rx: &str, left: Option<i64>, right: Option<i64>) {
+    fn do_test_int_range(rx: &str, left: Option<i128>, right: Option<i128>) {
         let re = Regex::new(&format!("^{rx}$")).unwrap();
         for n in (left.unwrap_or(0) - 1000)..=(right.unwrap_or(0) + 1000) {
             let matches = re.is_match(&n.to_string());
@@ -729,6 +731,46 @@ mod test_ranges {
         }
     }
 
+    #[test]
+    fn test_int_range_large_bounds() {
+        let i64_min = i64::MIN as i128;
+        let i64_max = i64::MAX as i128;
+        let e18 = 10_i128.pow(18);
+        let e30 = 10_i128.pow(30);
+        let cases = vec![
+            (Some(i64_min), Some(i64_max)),
+            (Some(i64_min), None),
+            (None, Some(i64_max)),
+            (Some(0), Some(u64::MAX as i128)),
+            (Some(e18), None),
+            (None, Some(-e18)),
+            (Some(-e18), Some(e18)),
+        ];
+
+        // the ranges are too wide to walk, so probe around each bound
+        for (left, right) in cases {
+            let rx = rx_int_range(left, right).unwrap();
+            let re = Regex::new(&format!("^{rx}$")).unwrap();
+            let probes = [left, right]
+                .into_iter()
+                .flatten()
+                .flat_map(|b| [b - 1, b, b + 1])
+                .chain([0, e30, -e30]);
+            for n in probes {
+                let expected = left.is_none_or(|l| l <= n) && right.is_none_or(|r| n <= r);
+                assert_eq!(
+                    re.is_match(&n.to_string()),
+                    expected,
+                    "{n} in [{left:?}, {right:?}] vs {rx:?}"
+                );
+            }
+        }
+
+        // past i128 this is an error, not an overflow
+        assert!(rx_int_range(Some(i128::MIN), None).is_err());
+        assert!(rx_int_range(Some(i128::MIN), Some(0)).is_err());
+    }
+
     fn do_test_float_range(
         rx: &str,
         left: Option<f64>,
@@ -738,7 +780,7 @@ mod test_ranges {
     ) {
         let re = Regex::new(&format!("^{rx}$")).unwrap();
         let left_int = left.map(|x| {
-            let left_int = x.ceil() as i64;
+            let left_int = x.ceil() as i128;
             if !left_inclusive && x == left_int as f64 {
                 left_int + 1
             } else {
@@ -746,7 +788,7 @@ mod test_ranges {
             }
         });
         let right_int = right.map(|x| {
-            let right_int = x.floor() as i64;
+            let right_int = x.floor() as i128;
             if !right_inclusive && x == right_int as f64 {
                 right_int - 1
             } else {

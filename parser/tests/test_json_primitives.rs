@@ -262,6 +262,37 @@ fn integer_both_maxima(#[values(-1,0,1)] test_value: i64) {
     json_schema_check(schema, &json!(test_value), true);
 }
 
+#[rstest]
+#[case(json!({"minimum": i64::MIN, "maximum": i64::MAX}), json!(i64::MIN), true)]
+#[case(json!({"minimum": i64::MIN, "maximum": i64::MAX}), json!(i64::MAX), true)]
+#[case(json!({"minimum": i64::MIN, "maximum": i64::MAX}), json!(-17), true)]
+#[case(json!({"minimum": i64::MIN}), json!(i64::MIN), true)]
+#[case(json!({"minimum": 0, "maximum": u64::MAX}), json!(u64::MAX), true)]
+#[case(json!({"minimum": 0, "maximum": u64::MAX}), json!(10_000_000_000_000_000_000_u64), true)]
+#[case(json!({"minimum": 0, "maximum": u64::MAX}), json!(-1), false)]
+#[case(json!({"minimum": 1_000_000_000_000_000_000_u64}), json!(1_000_000_000_000_000_000_u64), true)]
+#[case(json!({"minimum": 1_000_000_000_000_000_000_u64}), json!(999_999_999_999_999_999_u64), false)]
+#[case(json!({"maximum": -1_000_000_000_000_000_000_i64}), json!(-1_000_000_000_000_000_000_i64), true)]
+#[case(json!({"maximum": -1_000_000_000_000_000_000_i64}), json!(-999_999_999_999_999_999_i64), false)]
+#[case(json!({"exclusiveMaximum": i64::MAX}), json!(9_223_372_036_854_775_806_u64), true)]
+#[case(json!({"exclusiveMaximum": i64::MAX}), json!(9_223_372_036_854_775_808_u64), false)]
+#[case(json!({"exclusiveMinimum": i64::MIN}), json!(-9_223_372_036_854_775_807_i64), true)]
+#[case(json!({"exclusiveMinimum": i64::MIN}), json!(i64::MIN), false)]
+#[case(json!({"exclusiveMinimum": 10_000_000_000_000_000_u64}), json!(10_000_000_000_000_001_u64), true)]
+#[case(json!({"exclusiveMinimum": 10_000_000_000_000_000_u64}), json!(10_000_000_000_000_000_u64), false)]
+fn integer_large_bounds(
+    #[case] bounds: Value,
+    #[case] sample_value: Value,
+    #[case] expected_pass: bool,
+) {
+    // bounds at the edges of int64 and uint64, or with 17 to 20 digits.
+    // The bounds are parsed as f64, so i64::MAX and u64::MAX round up to
+    // 2^63 and 2^64 before they get here, and those are not checked.
+    let mut schema = bounds;
+    schema["type"] = json!("integer");
+    json_schema_check(&schema, &sample_value, expected_pass);
+}
+
 // ============================================================================
 
 #[rstest]
@@ -357,6 +388,21 @@ fn number_upper_bound(
 fn number_upper_bound_negative_zero() {
     let schema = &json!({"type":"number", "maximum": 0.0});
     json_schema_check(schema, &json!(-0.0), true);
+}
+
+#[rstest]
+#[case(json!({"minimum": i64::MIN, "maximum": i64::MAX}), json!(i64::MIN), true)]
+#[case(json!({"minimum": i64::MIN, "maximum": i64::MAX}), json!(1.5), true)]
+#[case(json!({"minimum": 1e18}), json!(1_000_000_000_000_000_000_u64), true)]
+#[case(json!({"minimum": 1e18}), json!(999_999_999_999_999_999_u64), false)]
+fn number_large_bounds(
+    #[case] bounds: Value,
+    #[case] sample_value: Value,
+    #[case] expected_pass: bool,
+) {
+    let mut schema = bounds;
+    schema["type"] = json!("number");
+    json_schema_check(&schema, &sample_value, expected_pass);
 }
 
 #[rstest]
